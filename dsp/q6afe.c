@@ -41,14 +41,15 @@ enum {
 };
 
 static struct afe_avcs_payload_port_mapping *pm[MAX_ALLOWED_USE_CASES];
-#ifdef CONFIG_SND_SMARTPA_AW882XX
+
+#ifdef CONFIG_AW882XX_DSP
 #define AFE_MODULE_ID_AWDSP_TX			(0x10013D00)
 #define AFE_MODULE_ID_AWDSP_RX			(0x10013D01)
 #define AFE_PARAM_ID_AWDSP_RX_SET_ENABLE	(0x10013D11)
 #define AFE_PARAM_ID_AWDSP_TX_SET_ENABLE	(0x10013D13)
 #define AFE_PARAM_ID_AWDSP_RX_PARAMS            (0x10013D12)
-#define AFE_PORT_ID_AWDSP_RX			(AFE_PORT_ID_PRIMARY_MI2S_RX)
-#define AFE_PORT_ID_AWDSP_TX			(AFE_PORT_ID_PRIMARY_MI2S_TX)
+//#define AFE_PORT_ID_AWDSP_RX			(AFE_PORT_ID_PRIMARY_MI2S_RX)
+//#define AFE_PORT_ID_AWDSP_TX			(AFE_PORT_ID_PRIMARY_MI2S_TX)
 #endif
 
 enum {
@@ -243,7 +244,7 @@ struct afe_ctl {
 	struct mutex afe_apr_lock;
 	struct mutex afe_clk_lock;
 	int set_custom_topology;
-#ifdef CONFIG_SND_SMARTPA_AW882XX
+#ifdef CONFIG_AW882XX_DSP
 	struct rtac_cal_block_data aw_cal;
 	atomic_t aw_state;
 #endif
@@ -891,7 +892,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 			return -EINVAL;
 		}
 
-#ifdef CONFIG_SND_SMARTPA_AW882XX
+#ifdef CONFIG_AW882XX_DSP
 		if (atomic_read(&this_afe.aw_state) == 1) {
 			if (!payload[0]) {
 				atomic_set(&this_afe.state, 0);
@@ -2219,7 +2220,7 @@ static int afe_spk_prot_prepare(int src_port, int dst_port, int param_id,
 	case AFE_PARAM_ID_SP_V4_EX_VI_FTM_CFG:
 		param_info.module_id = AFE_MODULE_SPEAKER_PROTECTION_V4_VI;
 		break;
-#ifdef CONFIG_SND_SMARTPA_AW882XX
+#ifdef CONFIG_AW882XX_DSP
 	case AFE_PARAM_ID_AWDSP_RX_SET_ENABLE:
 	case AFE_PARAM_ID_AWDSP_RX_PARAMS:
 		param_info.module_id = AFE_MODULE_ID_AWDSP_RX;
@@ -3457,18 +3458,17 @@ done:
 	return ret;
 }
 
-#ifdef CONFIG_SND_SMARTPA_AW882XX
-int aw_send_afe_rx_module_enable(void *buf, int size)
+#ifdef CONFIG_AW882XX_DSP
+int aw_send_afe_rx_module_enable(uint32_t rx_port_id, void *buf, int size)
 {
 	union afe_spkr_prot_config config;
-	int32_t port_id = AFE_PORT_ID_AWDSP_RX;
 
 	if (size > sizeof(config))
 		return -EINVAL;
 
 	memcpy(&config, buf, size);
 
-	if (afe_spk_prot_prepare(port_id, 0,
+	if (afe_spk_prot_prepare(rx_port_id, 0,
 		AFE_PARAM_ID_AWDSP_RX_SET_ENABLE, &config,
 		sizeof(union afe_spkr_prot_config))) {
 		pr_err("%s: set bypass failed \n", __func__);
@@ -3478,17 +3478,16 @@ int aw_send_afe_rx_module_enable(void *buf, int size)
 }
 EXPORT_SYMBOL(aw_send_afe_rx_module_enable);
 
-int aw_send_afe_tx_module_enable(void *buf, int size)
+int aw_send_afe_tx_module_enable(uint32_t tx_port_id, void *buf, int size)
 {
 	union afe_spkr_prot_config config;
-	int32_t port_id = AFE_PORT_ID_AWDSP_TX;
 
 	if (size > sizeof(config))
 		return -EINVAL;
 
 	memcpy(&config, buf, size);
 
-	if (afe_spk_prot_prepare(port_id, 0,
+	if (afe_spk_prot_prepare(tx_port_id, 0,
 		AFE_PARAM_ID_AWDSP_TX_SET_ENABLE, &config,
 		sizeof(union afe_spkr_prot_config))) {
 		pr_err("%s: set bypass failed \n", __func__);
@@ -3498,9 +3497,11 @@ int aw_send_afe_tx_module_enable(void *buf, int size)
 }
 EXPORT_SYMBOL(aw_send_afe_tx_module_enable);
 
-int aw_send_afe_cal_apr(uint32_t param_id, void *buf, int cmd_size, bool write)
+int aw_send_afe_cal_apr(uint32_t rx_port_id, uint32_t tx_port_id,
+						uint32_t param_id, void *buf, int cmd_size, bool write)
 {
-	int32_t result = 0, port_id = AFE_PORT_ID_AWDSP_RX;
+	int32_t result = 0;
+	uint32_t port_id = 0;
 	int32_t  module_id = AFE_MODULE_ID_AWDSP_RX;
 	uint32_t port_index = 0;
 	uint32_t payload_size = 0;
@@ -3510,9 +3511,9 @@ int aw_send_afe_cal_apr(uint32_t param_id, void *buf, int cmd_size, bool write)
 	struct param_hdr_v3  param_hdr;
 
 	pr_debug("%s: enter\n", __func__);
-
+	port_id = rx_port_id;
 	if (param_id == AFE_PARAM_ID_AWDSP_TX_SET_ENABLE) {
-		port_id = AFE_PORT_ID_AWDSP_TX;
+		port_id = tx_port_id;
 		module_id = AFE_MODULE_ID_AWDSP_TX;
 	}
 
@@ -10536,7 +10537,7 @@ void afe_exit(void)
 
 	q6core_destroy_uevent_data(this_afe.uevent_data);
 
-#ifdef CONFIG_SND_SMARTPA_AW882XX
+#ifdef CONFIG_AW882XX_DSP
 	aw_cal_unmap_memory();
 #endif
 

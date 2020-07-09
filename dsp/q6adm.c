@@ -4627,7 +4627,7 @@ int adm_set_ffecns_freeze_event(bool ffecns_freeze_event)
 }
 EXPORT_SYMBOL(adm_set_ffecns_freeze_event);
 
-#ifdef CONFIG_SND_SMARTPA_AW882XX
+#ifdef CONFIG_AW882XX_DSP
 int aw_adm_param_enable(int port_id, int module_id, int param_id, int enable)
 {
         int copp_idx = 0;

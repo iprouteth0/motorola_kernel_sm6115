@@ -1,7 +1,7 @@
 /*
  * aw882xx.c   aw882xx codec module
  *
- * Version: v0.1.9
+ * Version: v0.1.10
  *
  * keep same with AW882XX_VERSION
  *
@@ -15,7 +15,7 @@
  * option) any later version.
  */
 
-#define DEBUG
+#ifdef CONFIG_SND_SMARTPA_AW882XX
 
 #include <linux/module.h>
 #include <linux/i2c.h>
@@ -50,7 +50,7 @@
  ******************************************************/
 #define AW882XX_I2C_NAME "aw882xx_smartpa"
 
-#define AW882XX_VERSION "v0.1.9"
+#define AW882XX_VERSION "v0.1.10"
 
 #define AW882XX_RATES SNDRV_PCM_RATE_8000_48000
 #define AW882XX_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \
@@ -65,25 +65,26 @@
 
 
 #define CALI_BUF_MAX 100
-
 #define AWINIC_CALI_FILE  "/mnt/vendor/persist/factory/audio/aw_cali.bin"
 
 #ifdef CONFIG_AW882XX_DSP
-extern int aw_send_afe_cal_apr(uint32_t param_id, void *buf,int cmd_size, bool write);
-extern int aw_send_afe_rx_module_enable(void *buf, int cmd_size);
-extern int aw_send_afe_tx_module_enable(void *buf, int cmd_size);
+extern int aw_send_afe_cal_apr(uint32_t rx_port_id, uint32_t tx_port_id,
+                        uint32_t param_id, void *buf, int cmd_size, bool write);
+extern int aw_send_afe_rx_module_enable(uint32_t rx_port_id, void *buf, int cmd_size);
+extern int aw_send_afe_tx_module_enable(uint32_t tx_port_id, void *buf, int cmd_size);
 extern int aw_adm_param_enable(int port_id, int module_id, int param_id, int enable);
 #else
-static int aw_send_afe_cal_apr(uint32_t param_id, void *buf,int cmd_size, bool write) {
+static int aw_send_afe_cal_apr(uint32_t rx_port_id,uint32_t tx_port_id,
+                        uint32_t param_id, void *buf, int cmd_size, bool write) {
     return 0;
 }
 
-static int aw_send_afe_rx_module_enable(void *buf, int cmd_size)
+static int aw_send_afe_rx_module_enable(uint32_t rx_port_id, void *buf, int cmd_size)
 {
 	return 0;
 }
 
-static int aw_send_afe_tx_module_enable(void *buf, int cmd_size)
+static int aw_send_afe_tx_module_enable(uint32_t tx_port_id, void *buf, int cmd_size)
 {
 	return 0;
 }
@@ -94,9 +95,8 @@ static int aw_adm_param_enable(int port_id, int module_id, int param_id, int ena
 }
 #endif
 
-
-static int aw882xx_get_cali_re_form_nv(int32_t *cali_re);
-static int aw882xx_set_cali_re(struct aw882xx *aw882xx, int32_t cali_re);
+static int aw882xx_get_cali_re_from_nv(uint32_t *cali_re);
+static int aw882xx_set_cali_re(struct aw882xx *aw882xx, uint32_t cali_re);
 static int aw882xx_load_profile_params(struct aw882xx *aw882xx);
 static int aw882xx_skt_set_dsp(int value);
 static int aw882xx_send_profile_params_to_dsp(struct aw882xx *aw882xx, int profile_id, bool is_fade);
@@ -227,7 +227,6 @@ static int aw882xx_i2c_write(struct aw882xx *aw882xx,
 
 	buf[0] = (reg_data&0xff00)>>8;
 	buf[1] = (reg_data&0x00ff)>>0;
-
 	while (cnt < AW_I2C_RETRIES) {
 		ret = aw882xx_i2c_writes(aw882xx, reg_addr, buf, 2);
 		if (ret < 0)
@@ -274,6 +273,7 @@ static int aw882xx_i2c_write_bits(struct aw882xx *aw882xx,
 		pr_err("%s: i2c read error, ret=%d\n", __func__, ret);
 		return ret;
 	}
+
 	reg_val &= mask;
 	reg_val |= reg_data;
 	ret = aw882xx_i2c_write(aw882xx, reg_addr, reg_val);
@@ -295,8 +295,8 @@ static void aw882xx_run_mute(struct aw882xx *aw882xx, bool mute)
 	pr_debug("%s: enter\n", __func__);
 
 	if (mute) {
-	if (aw882xx->afe_profile)
-		aw882xx_fade_in_out(aw882xx, false);
+		if (aw882xx->afe_profile)
+			aw882xx_fade_in_out(aw882xx, false);
 		aw882xx_i2c_write_bits(aw882xx, AW882XX_SYSCTRL2_REG,
 				AW882XX_HMUTE_MASK,
 				AW882XX_HMUTE_ENABLE_VALUE);
@@ -304,8 +304,8 @@ static void aw882xx_run_mute(struct aw882xx *aw882xx, bool mute)
 		aw882xx_i2c_write_bits(aw882xx, AW882XX_SYSCTRL2_REG,
 				AW882XX_HMUTE_MASK,
 				AW882XX_HMUTE_DISABLE_VALUE);
-	if (aw882xx->afe_profile)
-		aw882xx_fade_in_out(aw882xx, true);
+		if (aw882xx->afe_profile)
+			aw882xx_fade_in_out(aw882xx, true);
 	}
 }
 
@@ -464,9 +464,15 @@ static int aw882xx_set_vcalb(struct aw882xx *aw882xx)
 static void aw882xx_send_cali_re_to_dsp(struct aw882xx *aw882xx)
 {
 	int ret = 0;
+	if((aw882xx != NULL) && (aw882xx->default_re == 0)) {
+		ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_RE_L,
+						&aw882xx->default_re, sizeof(int32_t), false);
+		pr_info("aw882xx: default_re:%d\n", aw882xx->default_re);
+	}
 	if ((aw882xx != NULL) && (aw882xx->cali_re != ERRO_CALI_VALUE)) {
-		ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_RE_L,
-			&aw882xx->cali_re, sizeof(int32_t), true);
+		ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+					AFE_PARAM_ID_AWDSP_RX_RE_L, &aw882xx->cali_re, sizeof(int32_t), true);
 	}
 	if (ret)
 		pr_err("%s : set cali re to dsp failed 0x%x\n",
@@ -476,13 +482,13 @@ static void aw882xx_send_cali_re_to_dsp(struct aw882xx *aw882xx)
 static void aw882xx_start(struct aw882xx *aw882xx)
 {
 	int ret = -1;
-	int32_t cali_re;
+	uint32_t cali_re;
 	pr_debug("%s: enter\n", __func__);
 
-	ret = aw882xx_get_cali_re_form_nv(&cali_re);
+	ret = aw882xx_get_cali_re_from_nv(&cali_re);
 	if (ret < 0) {
-		cali_re = (DEFAULT_CALI_VALUE << 12);
-		pr_err("%s: use default vaule %d", __func__ , cali_re);
+		cali_re = ERRO_CALI_VALUE;
+		pr_err("%s: use default vaule %d", __func__ , ERRO_CALI_VALUE);
 	}
 	ret = aw882xx_set_cali_re(aw882xx, cali_re);
 	if (ret < 0)
@@ -496,10 +502,10 @@ static void aw882xx_start(struct aw882xx *aw882xx)
 		schedule_work(&aw882xx->monitor.work);
 	}
 	if (aw882xx->afe_profile) {
-	ret = aw882xx_send_profile_params_to_dsp(aw882xx, aw882xx->profile.cur_profile, false);
-	if (ret) {
-		pr_err("%s: set profile %d failed \n", __func__,aw882xx->profile.cur_profile);
-		aw882xx->profile.cur_profile = 0;
+		ret = aw882xx_send_profile_params_to_dsp(aw882xx, aw882xx->profile.cur_profile, false);
+		if (ret) {
+			pr_err("%s: set profile %d failed \n", __func__,aw882xx->profile.cur_profile);
+			aw882xx->profile.cur_profile = 0;
 		}
 	}
 	aw882xx_send_cali_re_to_dsp(aw882xx);
@@ -543,12 +549,12 @@ static void aw882xx_stop(struct aw882xx *aw882xx)
  * aw882xx config
  *
  ******************************************************/
-static int aw882xx_get_cali_re_form_nv(int32_t *cali_re)
+static int aw882xx_get_cali_re_from_nv(uint32_t *cali_re)
 {
 	/*custom add, if success return value is 0 , else -1*/
 	struct file *fp;
 	char buf[CALI_BUF_MAX];
-	int32_t read_re;
+	uint32_t read_re;
 	loff_t pos = 0;
 	mm_segment_t fs;
 
@@ -583,7 +589,7 @@ static int aw882xx_get_cali_re_form_nv(int32_t *cali_re)
 	return  0;
 }
 
-static int aw882xx_set_cali_re(struct aw882xx *aw882xx, int32_t cali_re)
+static int aw882xx_set_cali_re(struct aw882xx *aw882xx, uint32_t cali_re)
 {
 	if (aw882xx == NULL)
 		return -EINVAL;
@@ -624,6 +630,7 @@ static void aw882xx_reg_loaded(const struct firmware *cont, void *context)
 {
 	struct aw882xx *aw882xx = context;
 	struct aw882xx_container *aw882xx_cfg;
+	bool afe_profile_reload = false;
 	int ret = -1;
 
 	if (!cont) {
@@ -659,8 +666,14 @@ static void aw882xx_reg_loaded(const struct firmware *cont, void *context)
 	kfree(aw882xx_cfg);
 	if (aw882xx->afe_profile) {
 		aw882xx_load_profile_params(aw882xx);
+		afe_profile_reload = true;
+		aw882xx->afe_profile = 0;
 	}
 	aw882xx_start(aw882xx);
+
+	if (afe_profile_reload) {
+		aw882xx->afe_profile = 1;
+	}
 }
 
 static int aw882xx_load_reg(struct aw882xx *aw882xx)
@@ -715,8 +728,7 @@ static void aw882xx_smartpa_cfg(struct aw882xx *aw882xx, bool flag)
  * kcontrol
  *
  ******************************************************/
-static const char *const spk_function[] = { "Off", "On" };
-static const char *const rcv_function[] = { "Off", "On" };
+static const char *const switch_status[] = { "Off", "On" };
 static const char *const awinic_algo[] = { "Disable", "Enable" };
 static const char *const awinic_profile[AW_PROFILE_MAX] = {
 "Music", "Ringtone", "Notification", "Voice"};
@@ -793,6 +805,7 @@ static int aw882xx_volume_put(struct snd_kcontrol *kcontrol,
 	value = value | (reg_value & 0x00ff);
 
 	/* write value */
+	aw882xx->cur_gain = value >> AW882XX_BIT_HAGCCFG4_GAIN_SHIFT;
 	aw882xx_i2c_write(aw882xx, AW882XX_HAGCCFG4_REG, value);
 
 	return 0;
@@ -892,7 +905,7 @@ static int aw882xx_algo_set(struct snd_kcontrol *kcontrol,
 		__func__, ucontrol->value.integer.value[0]);
 
 	ctrl_value = ucontrol->value.integer.value[0];
-	ret = aw_send_afe_rx_module_enable(&ctrl_value, sizeof(uint32_t));
+	ret = aw_send_afe_rx_module_enable(g_aw882xx->afe_rx_portid, &ctrl_value, sizeof(uint32_t));
 	if (ret)
 		pr_err("%s: set algo %d failed, ret=%d\n",
 			__func__, ctrl_value, ret);
@@ -921,7 +934,7 @@ static int aw882xx_tx_set(struct snd_kcontrol *kcontrol,
 		__func__, ucontrol->value.integer.value[0]);
 
 	ctrl_value = ucontrol->value.integer.value[0];
-	ret = aw_send_afe_tx_module_enable(&ctrl_value, sizeof(uint32_t));
+	ret = aw_send_afe_tx_module_enable(g_aw882xx->afe_tx_portid, &ctrl_value, sizeof(uint32_t));
 	if (ret)
 		pr_err("%s: set tx enable %d, ret=%d\n", __func__, ctrl_value, ret);
 	atomic_set(&g_algo_tx_enable, ctrl_value);
@@ -1056,12 +1069,13 @@ static void aw882xx_volume_set(struct aw882xx *aw882xx, unsigned int value)
 	unsigned int reg_value = 0;
 	unsigned int real_value = ((value / VOLUME_STEP_DB) << 4) + (value % VOLUME_STEP_DB) * 2;
 
-	/* cal real value */
-	aw882xx_i2c_read(aw882xx, AW882XX_HAGCCFG4_REG, &reg_value);
-	real_value = (real_value << 8) | (reg_value & 0x00ff);
-
-	/* write value */
-	aw882xx_i2c_write(aw882xx, AW882XX_HAGCCFG4_REG, real_value);
+	if(real_value > aw882xx->cur_gain) {
+		/* cal real value */
+		aw882xx_i2c_read(aw882xx, AW882XX_HAGCCFG4_REG, &reg_value);
+		real_value = (real_value << 8) | (reg_value & 0x00ff);
+		/* write value */
+		aw882xx_i2c_write(aw882xx, AW882XX_HAGCCFG4_REG, real_value);
+	}
 }
 
 static void aw882xx_fade_in_out(struct aw882xx *aw882xx, bool is_fade_in)
@@ -1076,7 +1090,7 @@ static void aw882xx_fade_in_out(struct aw882xx *aw882xx, bool is_fade_in)
 			i -= FADE_STEP_DB;
 			usleep_range(1400,1600);
 		} while (i >= 0);
-	} else {  //volume down
+	} else {  // volume down
 		do {
 			aw882xx_volume_set(aw882xx, i);
 			i += FADE_STEP_DB;
@@ -1103,7 +1117,8 @@ static int aw882xx_send_profile_params_to_dsp(struct aw882xx *aw882xx, int profi
 		//aw882xx_fade_in_out(aw882xx, false);
 		aw882xx_run_mute(aw882xx, true);
 	}
-	ret = aw_send_afe_cal_apr(params_id,
+	ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+			params_id,
 			aw882xx->profile.data[profile_id],
 			aw882xx->profile.len, true);
 	if (ret) {
@@ -1132,7 +1147,6 @@ static int aw882xx_profile_set(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct aw882xx *aw882xx = snd_soc_component_get_drvdata(codec);
-	
 	unsigned int ctl_value = 0;
 	int ret;
 	ctl_value = ucontrol->value.integer.value[0];
@@ -1179,8 +1193,8 @@ static int aw882xx_skt_disable_get(struct snd_kcontrol *kcontrol,
 
 static int aw882xx_skt_set_dsp(int value)
 {
-        int ret;
-	int port_id = AFE_RX_PROT_ID;
+	int ret;
+	int port_id = g_aw882xx->afe_rx_portid;
 	int module_id = AW_MODULE_ID_COPP;
 	int param_id =  AW_MODULE_PARAMS_ID_COPP_ENABLE;
 
@@ -1205,6 +1219,42 @@ static int aw882xx_skt_disable_set(struct snd_kcontrol *kcontrol,
 
 	return 0;
 }
+
+static int aw882xx_monitor_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
+	struct aw882xx *aw882xx = snd_soc_component_get_drvdata(codec);
+
+
+	pr_debug("%s: aw882xx_monitor_get %d\n",
+		__func__, aw882xx->monitor.is_enable);
+
+	ucontrol->value.integer.value[0] = aw882xx->monitor.is_enable;
+
+	return 0;
+}
+
+static int aw882xx_monitor_set(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
+	struct aw882xx *aw882xx = snd_soc_component_get_drvdata(codec);
+
+	int enable = ucontrol->value.integer.value[0];
+
+	pr_debug("%s: aw882xx_monitor_set %d \n", __func__, enable);
+
+	if (enable == aw882xx->monitor.is_enable)
+		return 1;
+
+	aw882xx->monitor.is_enable = enable;
+	if (enable)
+		schedule_work(&aw882xx->monitor.work);
+
+	return 0;
+}
+
 #ifdef AW882XX_RUNIN_TEST
 static int aw882xx_runin_test_get(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
@@ -1244,7 +1294,7 @@ static void aw882xx_set_adsp_module_status(struct work_struct *work)
 	}
 	set_value = 0;
 	/*set afe rx module*/
-	ret = aw_send_afe_rx_module_enable(&set_value, sizeof(uint32_t));
+	ret = aw_send_afe_rx_module_enable(g_aw882xx->afe_rx_portid, &set_value, sizeof(uint32_t));
 	if (ret) {
 		pr_debug("%s: disable afe rx module  %d falied , ret=%d\n",
 				__func__, set_value, ret);
@@ -1260,23 +1310,8 @@ static void aw882xx_set_adsp_module_status(struct work_struct *work)
 }
 #endif
 
-static const struct snd_soc_dapm_widget aw882xx_dapm_widgets[] = {
-	SND_SOC_DAPM_AIF_IN("AW_DAI_RX", "Speaker_Playback", 0, 0, 0, 0),
-	SND_SOC_DAPM_AIF_OUT("AW_DAI_TX", "Speaker_Capture", 0, 0, 0, 0),	
-	SND_SOC_DAPM_OUTPUT("SPK_OUT"),
-	SND_SOC_DAPM_INPUT("CAPTURE_IN"),
-};
-
-static const struct snd_soc_dapm_route aw882xx_audio_map[] = {
-	{"AW_DAI_RX", NULL, "Speaker_Playback"},
-	{"Speaker_Capture", NULL, "AW_DAI_TX"},
-	{"AW_DAI_TX", NULL, "CAPTURE_IN"},
-	{"SPK_OUT", NULL, "AW_DAI_RX"},	
-};
-
 static const struct soc_enum aw882xx_snd_enum[] = {
-	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(spk_function), spk_function),
-	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(rcv_function), rcv_function),
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(switch_status), switch_status),
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(awinic_algo), awinic_algo),
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(awinic_profile), awinic_profile),
 };
@@ -1284,21 +1319,25 @@ static const struct soc_enum aw882xx_snd_enum[] = {
 static struct snd_kcontrol_new aw882xx_controls[] = {
 	SOC_ENUM_EXT("aw882xx_speaker_switch", aw882xx_snd_enum[0],
 		aw882xx_spk_get, aw882xx_spk_set),
-	SOC_ENUM_EXT("aw882xx_receiver_switch", aw882xx_snd_enum[1],
+	SOC_ENUM_EXT("aw882xx_receiver_switch", aw882xx_snd_enum[0],
 		aw882xx_rcv_get, aw882xx_rcv_set),
-	SOC_ENUM_EXT("aw882xx_rx_switch", aw882xx_snd_enum[2],
+	SOC_ENUM_EXT("aw882xx_rx_switch", aw882xx_snd_enum[1],
 		aw882xx_algo_get, aw882xx_algo_set),
-	SOC_ENUM_EXT("aw882xx_tx_switch", aw882xx_snd_enum[2],
+	SOC_ENUM_EXT("aw882xx_tx_switch", aw882xx_snd_enum[1],
 		aw882xx_tx_get, aw882xx_tx_set),
-	SOC_ENUM_EXT("aw882xx_profile_switch", aw882xx_snd_enum[3],
-		aw882xx_profile_get, aw882xx_profile_set),
 	SOC_ENUM_EXT("aw882xx_skt_disable", aw882xx_snd_enum[0],
 		aw882xx_skt_disable_get, aw882xx_skt_disable_set),
-
+	SOC_ENUM_EXT("aw882xx_monitor_switch", aw882xx_snd_enum[1],
+		aw882xx_monitor_get, aw882xx_monitor_set),
 #ifdef AW882XX_RUNIN_TEST
 	SOC_ENUM_EXT("aw882xx_runin_test", aw882xx_snd_enum[0],
 		aw882xx_runin_test_get, aw882xx_runin_test_set),
 #endif
+};
+
+static struct snd_kcontrol_new aw882xx_profile_controls[] = {
+	SOC_ENUM_EXT("aw882xx_profile_switch", aw882xx_snd_enum[2],
+		aw882xx_profile_get, aw882xx_profile_set),
 };
 
 static void aw882xx_add_codec_controls(struct aw882xx *aw882xx)
@@ -1307,7 +1346,10 @@ static void aw882xx_add_codec_controls(struct aw882xx *aw882xx)
 
 	snd_soc_add_component_controls(aw882xx->component, aw882xx_controls,
 		ARRAY_SIZE(aw882xx_controls));
-
+	if(aw882xx->afe_profile) {
+		snd_soc_add_component_controls(aw882xx->component, aw882xx_profile_controls,
+		ARRAY_SIZE(aw882xx_profile_controls));
+	}
 	snd_soc_add_component_controls(aw882xx->component, &aw882xx_volume, 1);
 }
 
@@ -1613,12 +1655,6 @@ static int aw882xx_codec_write(struct snd_soc_component *component,
 
 static struct snd_soc_component_driver soc_component_dev_aw882xx = {
 	.probe = aw882xx_probe,
-	.dapm_widgets = aw882xx_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(aw882xx_dapm_widgets),
-	.dapm_routes = aw882xx_audio_map,
-	.num_dapm_routes = ARRAY_SIZE(aw882xx_audio_map),
-	.controls = aw882xx_controls,
-	.num_controls = ARRAY_SIZE(aw882xx_controls),
 	.remove = aw882xx_remove,
 	.read = aw882xx_codec_read,
 	.write = aw882xx_codec_write,
@@ -1837,7 +1873,7 @@ static int aw882xx_parse_dt(struct device *dev, struct aw882xx *aw882xx,
 	ret = of_property_read_u32(np, "monitor-flag", &monitor->is_enable);
 	if (ret) {
 		monitor->is_enable = AW882XX_MONITOR_DEFAULT_FLAG;
-		dev_err(dev, "%s: monitor-flag get failed ,user default value!\n", __func__);
+		dev_err(dev, "%s: monitor-flag get failed ,use default value!\n", __func__);
 	} else {
 		dev_info(dev, "%s: monitor-flag = %d\n",
 			__func__, monitor->is_enable);
@@ -1846,15 +1882,36 @@ static int aw882xx_parse_dt(struct device *dev, struct aw882xx *aw882xx,
 	ret = of_property_read_u32(np, "monitor-timer-val", &monitor->timer_val);
 	if (ret) {
 		monitor->timer_val = AW882XX_MONITOR_DEFAULT_TIMER_VAL;
-		dev_err(dev, "%s: monitor-timer-val get failed,user default value!\n", __func__);
+		dev_err(dev, "%s: monitor-timer-val get failed,use default value!\n", __func__);
 	} else {
 		dev_info(dev, "%s: monitor-timer-val = %d\n",
 			__func__, monitor->timer_val);
 	}
+
+	ret = of_property_read_u32(np, "afe-rx-portid", &aw882xx->afe_rx_portid);
+	if (ret) {
+		aw882xx->afe_rx_portid = AW882XX_DEFAULT_AFE_RX_PROT_ID;
+		dev_err(dev, "%s: afe_rx_portid get failed,use default port: 0x%x!\n",
+			__func__, aw882xx->afe_rx_portid);
+	} else {
+		dev_info(dev, "%s: afe_rx_portid = 0x%x\n",
+			__func__, aw882xx->afe_rx_portid);
+	}
+
+	ret = of_property_read_u32(np, "afe-tx-portid", &aw882xx->afe_tx_portid);
+	if (ret) {
+		aw882xx->afe_tx_portid = AW882XX_DEFAULT_AFE_TX_PROT_ID;
+		dev_err(dev, "%s: afe_tx_portid get failed,use default port: 0x%x!\n",
+			__func__, aw882xx->afe_tx_portid);
+	} else {
+		dev_info(dev, "%s: afe_tx_portid = 0x%x\n",
+			__func__, aw882xx->afe_tx_portid);
+	}
+
 	ret = of_property_read_u32(np, "afe-profile", &aw882xx->afe_profile);
 	if (ret) {
 		aw882xx->afe_profile = 0;
-		dev_err(dev, "%s: afe-profile get failed,user default value!\n", __func__);
+		dev_err(dev, "%s: afe-profile get failed,use default value!\n", __func__);
 	} else {
 		dev_info(dev, "%s: afe-profile = %d\n",
 			__func__, aw882xx->afe_profile);
@@ -2129,7 +2186,8 @@ static ssize_t aw882xx_mec_store(struct device *dev,
 
 	pr_info("%s: mec_ctr=%d\n", __func__, mec_ctr);
 
-	ret = aw_send_afe_cal_apr(param_id, &mec_ctr, sizeof(uint32_t), true);
+	ret = aw_send_afe_cal_apr(g_aw882xx->afe_rx_portid, g_aw882xx->afe_tx_portid,
+							param_id, &mec_ctr, sizeof(uint32_t), true);
 	if (ret)
 		pr_err("%s: dsp_msg error, ret=%d\n", __func__, ret);
 
@@ -2154,7 +2212,8 @@ static ssize_t aw882xx_mec_show(struct device *dev,
 		return -ENOMEM;
 	}
 
-	ret = aw_send_afe_cal_apr(param_id, buffer, sizeof(uint32_t), false);
+	ret = aw_send_afe_cal_apr(g_aw882xx->afe_rx_portid, g_aw882xx->afe_tx_portid,
+							param_id, buffer, sizeof(uint32_t), false);
 	if (ret) {
 		pr_err("%s: dsp_msg_read error: %d\n", __func__, ret);
 		kfree(buffer);
@@ -2170,6 +2229,30 @@ static ssize_t aw882xx_mec_show(struct device *dev,
 
 	return len;
 }
+
+static ssize_t aw882xx_default_re_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct aw882xx *aw882xx = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	int ret = -1;
+
+	if((aw882xx != NULL) && (aw882xx->default_re == 0)) {
+		ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_RE_L,
+						&aw882xx->default_re, sizeof(int32_t), false);
+		if (ret) {
+			pr_err("%s: dsp_msg_read error: %d\n", __func__, ret);
+			return -EFAULT;
+		}
+	}
+	if(aw882xx != NULL) {
+		len += snprintf(buf+len, PAGE_SIZE-len,
+			"aw882xx default_re: %d\n", aw882xx->default_re);
+	}
+	return len;
+}
+
 #ifdef AW_DEBUG
 static ssize_t aw882xx_vol_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
@@ -2266,7 +2349,7 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 				ret = -EFAULT;
 				goto exit;
 			}
-			ret = aw_send_afe_cal_apr(
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
 				AFE_PARAM_ID_AWDSP_RX_CALI_CFG_L,
 							data_ptr, data_len, true);
 			if (ret) {
@@ -2277,7 +2360,7 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 			}
 		} break;
 		case AW882XX_IOCTL_GET_CALI_CFG: {
-			ret = aw_send_afe_cal_apr(
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
 				AFE_PARAM_ID_AWDSP_RX_CALI_CFG_L,
 						data_ptr, data_len, false);
 			if (ret) {
@@ -2293,7 +2376,7 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 			}
 		} break;
 		case AW882XX_IOCTL_GET_CALI_DATA: {
-			ret = aw_send_afe_cal_apr(
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
 				AFE_PARAM_ID_AWDSP_RX_REAL_DATA_L,
 						data_ptr, data_len, false);
 			if (ret) {
@@ -2314,7 +2397,8 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 				ret = -EFAULT;
 				goto exit;
 			}
-			ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_NOISE_L,
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_NOISE_L,
 						data_ptr, data_len, true);
 			if (ret) {
 				pr_err("%s: dsp_msg_write error: 0x%x\n",
@@ -2324,7 +2408,8 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 			}
 		} break;
 		case AW882XX_IOCTL_GET_F0: {
-			ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_F0_L,
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_F0_L,
 						data_ptr, data_len, false);
 			if (ret) {
 				pr_err("%s: dsp_msg_read error: 0x%x\n",
@@ -2344,7 +2429,13 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 				ret = -EFAULT;
 				goto exit;
 			}
-			ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_RE_L,
+			if(aw882xx->default_re == 0) {
+				ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+					AFE_PARAM_ID_AWDSP_RX_RE_L, &aw882xx->default_re, sizeof(int32_t), false);
+				pr_info("aw882xx: default_re:%d\n", aw882xx->default_re);
+			}
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_RE_L,
 						data_ptr, data_len, true);
 			if (ret) {
 				pr_err("%s: dsp_msg_write error: 0x%x\n",
@@ -2355,8 +2446,13 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 			aw882xx_set_cali_re(aw882xx, *((int32_t *)data_ptr));
 		} break;
 		case AW882XX_IOCTL_GET_CALI_RE: {
-			ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_RE_L,
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_RE_L,
 						data_ptr, data_len, false);
+			if(aw882xx->default_re == 0) {
+				aw882xx->default_re = *((uint32_t *)data_ptr);
+				pr_info("aw882xx: default_re:%d\n", aw882xx->default_re);
+			}
 			if (ret) {
 				pr_err("%s: dsp_msg_read error: 0x%x\n",
 					__func__, AFE_PARAM_ID_AWDSP_RX_RE_L);
@@ -2370,7 +2466,8 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 			}
 		} break;
 		case AW882XX_IOCTL_GET_VMAX: {
-			ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_VMAX_L,
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+				AFE_PARAM_ID_AWDSP_RX_VMAX_L,
 				data_ptr, data_len, false);
 			if (ret) {
 				pr_err("%s: dsp_msg_read error:0x%x\n",
@@ -2390,7 +2487,8 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 				ret = -EFAULT;
 				goto exit;
 			}
-			ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_VMAX_L,
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_VMAX_L,
 						data_ptr, data_len, true);
 			if (ret) {
 				pr_err("%s: dsp_msg_write error: 0x%x\n",
@@ -2405,7 +2503,8 @@ static int aw882xx_cali_operation(struct aw882xx *aw882xx,
 				ret = -EFAULT;
 				goto exit;
 			}
-			ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_PARAMS,
+			ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+						AFE_PARAM_ID_AWDSP_RX_PARAMS,
 						data_ptr, data_len, true);
 			if (ret) {
 				pr_err("%s: dsp_msg_write error: 0x%x\n",
@@ -2434,6 +2533,8 @@ static DEVICE_ATTR(spk_rcv, S_IWUSR | S_IRUGO,
 	aw882xx_spk_rcv_show, aw882xx_spk_rcv_store);
 static DEVICE_ATTR(mec, S_IWUSR | S_IRUGO,
 	aw882xx_mec_show, aw882xx_mec_store);
+static DEVICE_ATTR(default_re, S_IWUSR | S_IRUGO,
+	aw882xx_default_re_show, NULL);
 #ifdef AW_DEBUG
 static DEVICE_ATTR(vol, S_IWUSR | S_IRUGO,
 	aw882xx_vol_show, aw882xx_vol_store);
@@ -2447,6 +2548,7 @@ static struct attribute *aw882xx_attributes[] = {
 	&dev_attr_rw.attr,
 	&dev_attr_spk_rcv.attr,
 	&dev_attr_mec.attr,
+	&dev_attr_default_re.attr,
 #ifdef AW_DEBUG
 	&dev_attr_vol.attr,
 	&dev_attr_temp.attr,
@@ -2768,9 +2870,8 @@ static void aw882xx_monitor_set_gain(struct aw882xx *aw882xx, uint8_t gain)
 		return;
 	}
 
-	read_reg_val = reg_val;
-	read_reg_val = read_reg_val >> AW882XX_BIT_HAGCCFG4_GAIN_SHIFT;
-
+	read_reg_val = reg_val >> AW882XX_BIT_HAGCCFG4_GAIN_SHIFT;
+	aw882xx->cur_gain = gain;
 	if (read_reg_val == gain) {
 		pr_debug("%s: gain = 0x%x, no change\n",
 				__func__, read_reg_val);
@@ -2796,7 +2897,8 @@ static void aw882xx_monitor_set_vmax(struct aw882xx *aw882xx, uint32_t vmax)
 	if (vmax == VMAX_NONE)
 		return;
 
-	ret = aw_send_afe_cal_apr(AFE_PARAM_ID_AWDSP_RX_VMAX_L,
+	ret = aw_send_afe_cal_apr(aw882xx->afe_rx_portid, aw882xx->afe_tx_portid,
+				AFE_PARAM_ID_AWDSP_RX_VMAX_L,
 				&local_vmax, sizeof(uint32_t), true);
 	if (ret)
 		pr_err("%s: dsp_msg_write error: 0x%x\n",
@@ -3034,6 +3136,7 @@ static int aw882xx_i2c_probe(struct i2c_client *i2c,
 	init_aw882xx_misc_driver(aw882xx);
 	g_aw882xx = aw882xx;
 
+	aw882xx->default_re = 0;
 	/*init profile*/
 	mutex_init(&aw882xx->profile.lock);
 	aw882xx->profile.cur_profile = 0;
@@ -3147,3 +3250,5 @@ module_exit(aw882xx_i2c_exit);
 
 MODULE_DESCRIPTION("ASoC AW882XX Smart PA Driver");
 MODULE_LICENSE("GPL v2");
+
+#endif /* CONFIG_SND_SMARTPA_AW882XX */
