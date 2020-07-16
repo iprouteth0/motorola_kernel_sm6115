@@ -250,6 +250,7 @@ struct aw882xx {
 	uint32_t cali_re;
 	uint32_t default_re;
 	uint8_t cur_gain;
+	uint8_t need_fade;
 	unsigned int cfg_num;
 	unsigned int afe_rx_portid;
 	unsigned int afe_tx_portid;
