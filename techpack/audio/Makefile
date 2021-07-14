@@ -15,6 +15,10 @@ ifeq ($(CONFIG_ARCH_KONA), y)
 include $(srctree)/techpack/audio/config/konaauto.conf
 export $(shell sed 's/=.*//' $(srctree)/techpack/audio/config/konaauto.conf)
 endif
+ifeq ($(CONFIG_ARCH_BENGAL), y)
+include $(srctree)/techpack/audio/config/bengalauto.conf
+export $(shell sed 's/=.*//' $(srctree)/techpack/audio/config/bengalauto.conf)
+endif
 ifeq ($(CONFIG_BORNEO_DTB), y)
 include $(srctree)/techpack/audio/config/bengalborneo.conf
 export $(shell sed 's/=.*//' $(srctree)/techpack/audio/config/bengalborneo.conf)
@@ -46,6 +50,10 @@ endif
 ifeq ($(CONFIG_ARCH_KONA), y)
 LINUXINCLUDE    += \
                 -include $(srctree)/techpack/audio/config/konaautoconf.h
+endif
+ifeq ($(CONFIG_ARCH_BENGAL), y)
+LINUXINCLUDE    += \
+                -include $(srctree)/techpack/audio/config/bengalautoconf.h
 endif
 ifeq ($(CONFIG_NIO_DTB), y)
 LINUXINCLUDE    += \
