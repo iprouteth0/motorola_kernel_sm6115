@@ -1,0 +1,1 @@
+obj-$(CONFIG_MMI_SYS_TEMP)
